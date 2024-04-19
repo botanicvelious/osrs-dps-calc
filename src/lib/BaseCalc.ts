@@ -79,7 +79,7 @@ export default class BaseCalc {
     }
   }
 
-  protected track<T extends Parameters<CalcDetails['track']>[1]>(label: Parameters<CalcDetails['track']>[0], value: T, textOverride?: Parameters<CalcDetails['track']>[2]): T {
+  protected track<P extends Parameters<CalcDetails['track']>, T extends P[1]>(label: P[0], value: T, textOverride?: P[2]): T {
     this._details?.track(label, value, textOverride);
     return value;
   }
