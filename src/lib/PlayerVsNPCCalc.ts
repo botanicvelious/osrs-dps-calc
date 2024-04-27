@@ -46,6 +46,7 @@ import {
 import BaseCalc, { CalcOpts, InternalOpts } from '@/lib/BaseCalc';
 import { scaleMonsterHpOnly } from '@/lib/MonsterScaling';
 import { range } from 'd3-array';
+import { Profiler } from '@/utils';
 
 /**
  * Class for computing various player-vs-NPC metrics.
@@ -797,11 +798,12 @@ export default class PlayerVsNPCCalc extends BaseCalc {
     }
 
     if (this.isUsingMeleeStyle() && this.wearing('Dual macuahuitl')) {
-      const secondHit = HitDistribution.linear(acc, 0, Math.trunc(max / 2)); // same across all transforms
-      dist = dist.transform(
+      const firstHit = HitDistribution.linear(acc, 0, max - Math.trunc(max / 2));
+      const secondHit = HitDistribution.linear(acc, 0, Math.trunc(max / 2));
+      dist = new AttackDistribution([firstHit.transform(
         (h) => new HitDistribution([new WeightedHit(1.0, [h])]).zip(secondHit),
         { transformInaccurate: false },
-      );
+      )]);
     }
 
     if (this.isUsingMeleeStyle() && this.isWearingKeris() && mattrs.includes(MonsterAttribute.KALPHITE)) {
@@ -1126,14 +1128,7 @@ export default class PlayerVsNPCCalc extends BaseCalc {
    * it is an object where keys are tick counts and values are probabilities.
    */
   public getTtkDistribution(): Map<number, number> {
-    let time = new Date().getTime();
-    // const lasts = new Map<string, number>();
-    // const cumulatives = new Map<string, number>();
-    const stamp = (name: string) => {
-      const now = new Date().getTime();
-      console.debug(`${name} took ${now - time}ms`);
-      time = now;
-    };
+    this.profiler.enter('setup');
 
     const speed = this.getAttackSpeed();
     const playerDist = this.getDistribution().zipped;
@@ -1155,6 +1150,7 @@ export default class PlayerVsNPCCalc extends BaseCalc {
     // todo dual maracas
     // todo thralls
     const isVariableAttackSpeed = this.wearing(['Dual macuahuitl', 'Test macuahuitl']);
+    const delayProvider = this.weaponDelayProvider(speed);
     if (!isVariableAttackSpeed) {
       for (let i = 1; i <= iterMax; i += speed) {
         attackOnTick[0][i] = 1.0;
@@ -1170,7 +1166,11 @@ export default class PlayerVsNPCCalc extends BaseCalc {
      * todo is this correct?
      * tickHps[distIx][tick + speed] += tickProb * hpProb dmgProb * speedProb
      */
-    const tickHps = range(0, iterMax + 1).map(() => new Float64Array(iterMax + 1));
+    // const tickHps = range(0, iterMax + 1).map(() => new Float64Array(this.monster.skills.hp + 1));
+    const h = iterMax + 1;
+    const w = this.monster.skills.hp + 1;
+    const tickHpsRoot = new Float64Array(h * w);
+    const tickHps = range(0, h).map((i) => tickHpsRoot.subarray(w * i, w * (i + 1)));
     tickHps[1][this.monster.skills.hp] = 1.0;
 
     // output map, will be converted at the end
@@ -1181,15 +1181,15 @@ export default class PlayerVsNPCCalc extends BaseCalc {
 
     // if the hit dist depends on hp, we'll have to recalculate it each time, so cache the results to not repeat work
     const recalcDistOnHp = PlayerVsNPCCalc.distIsCurrentHpDependent(this.player, this.monster);
-    const hpHitDists = new Map<number, HitDistribution>();
-    hpHitDists.set(this.monster.skills.hp, playerDist);
+    const hpHitDists = new Array<HitDistribution>(this.monster.skills.hp + 1);
+    hpHitDists[this.monster.skills.hp] = playerDist;
     if (recalcDistOnHp) {
-      for (let hp = 0; hp < this.monster.skills.hp; hp++) {
-        hpHitDists.set(hp, this.distAtHp(hp));
+      for (let hp = 0; hp <= this.monster.skills.hp; hp++) {
+        hpHitDists[hp] = this.distAtHp(hp);
       }
     }
 
-    stamp('setup');
+    this.profiler.exit('setup');
 
     // 1. until the amount of hp values remaining above zero is more than our desired epsilon accuracy,
     //    or we reach the maximum iteration rounds
@@ -1206,71 +1206,67 @@ export default class PlayerVsNPCCalc extends BaseCalc {
         const hps = tickHps[tick];
         for (const [hp, hpProb] of hps.entries()) {
           // this is a bit of a hack, but idk if there's a better way
-          const currDist: HitDistribution = recalcDistOnHp ? hpHitDists.get(hp)! : dist;
+          const currDist: HitDistribution = recalcDistOnHp ? hpHitDists[hp] : dist;
 
           // 4. for each damage amount possible,
           for (const wh of currDist.hits) {
             const dmgProb = wh.probability;
             const dmg = wh.getSum();
 
-            const delays = this.weaponDelay(speed, wh);
-            for (const [delay, delayProb] of delays) {
-              if (!delayProb) {
-                continue;
-              }
+            const chanceOfAction = dmgProb * hpProb;
+            if (chanceOfAction === 0) {
+              continue;
+            }
 
-              // 5. the chance of this path being reached is the previous chance of landing here * the chance of hitting this amount
-              const chanceOfAction = dmgProb * hpProb * delayProb;
-              if (chanceOfAction === 0) {
-                continue;
-              }
-
-              const newHp = hp - dmg;
-
-              // 6. if the hp we are about to arrive at is <= 0, the npc is killed, the iteration count is hits done,
-              //    and we add this probability path into the delta
-              if (newHp <= 0) {
-                ttks.set(tick, (ttks.get(tick) || 0) + chanceOfAction);
-                epsilon -= chanceOfAction;
-              } else {
-                // 7. otherwise, we add the chance of this path to the next iteration's hp value
-                tickHps[tick + delay][newHp] += chanceOfAction;
-                attackOnTick[distIx][tick + delay] += chanceOfAction;
+            const newHp = hp - dmg;
+            if (newHp <= 0) {
+              ttks.set(tick, (ttks.get(tick) || 0) + chanceOfAction);
+              epsilon -= chanceOfAction;
+            } else {
+              const delays = delayProvider(wh);
+              for (const [delay, delayProb] of delays) {
+                this.profiler.cumulative('ttk continuance', () => {
+                  const chanceOfContinuance = chanceOfAction * delayProb;
+                  // 7. otherwise, we add the chance of this path to the next iteration's hp value
+                  tickHps[tick + delay][newHp] += chanceOfContinuance;
+                  attackOnTick[distIx][tick + delay] += chanceOfContinuance;
+                });
               }
             }
           }
         }
       }
-      stamp(`tick ${tick}`);
     }
 
+    this.profiler.log(console.log);
     return ttks;
   }
 
-  private weaponDelay(baseSpeed: number, wh: WeightedHit): [delay: number, prob: number][] {
-    // const baseSpeed = this.getAttackSpeed();
-    // if (this.wearing('Test macuahuitl')) {
-    return [[wh.hitsplats[0].accurate ? 3 : 4, 1.0]];
-    // }
+  private weaponDelayProvider(baseSpeed: number): (wh: WeightedHit) => [delay: number, prob: number][] {
+    if (this.wearing('Test macuahuitl')) {
+      return (wh) => [[wh.hitsplats[0].accurate ? 3 : 4, 1.0]];
+    }
 
     // todo lookup table accurate-hitsplats-count => chance ?
     if (this.wearing('Dual macuahuitl')) {
-      let chanceNoEffect = 1.0;
-      for (const splat of wh.hitsplats) {
-        if (splat.accurate) {
-          chanceNoEffect *= 67 / 100;
-        } else {
-          break;
+      return (wh) => this.profiler.cumulative('Dual machuahuitl delay provider', () => {
+        let chanceNoEffect = 1.0;
+        for (const splat of wh.hitsplats) {
+          if (splat.accurate) {
+            chanceNoEffect *= 67 / 100;
+          } else {
+            break;
+          }
         }
-      }
 
-      return [
-        [baseSpeed - 1, 1 - chanceNoEffect],
-        [baseSpeed, chanceNoEffect],
-      ];
+        return [
+          [baseSpeed - 1, 1 - chanceNoEffect],
+          [baseSpeed, chanceNoEffect],
+        ];
+      });
     }
 
-    return [[baseSpeed, 1.0]];
+    return () => [[baseSpeed, 1.0]];
   }
 
   distAtHp(hp: number): HitDistribution {
@@ -1305,12 +1301,13 @@ export default class PlayerVsNPCCalc extends BaseCalc {
       <InternalOpts>{
         ...this.opts,
         noInit: true,
+        profiler: this.profiler,
       },
     );
     subCalc.allEquippedItems = this.allEquippedItems;
     subCalc.baseMonster = this.baseMonster;
 
-    return subCalc.getDistribution().singleHitsplat;
+    return subCalc.getDistribution().zipped;
   }
 
   demonbaneFactor(baseFactor: Factor): Factor {

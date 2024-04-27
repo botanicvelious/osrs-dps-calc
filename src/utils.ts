@@ -144,6 +144,52 @@ export class Debouncer {
   }
 }
 
+export const time = <T>(block: () => T): [result: T, duration: number] => {
+  const start = self.performance.now(); // eslint-disable-line no-restricted-globals
+  const result = block();
+  const end = self.performance.now(); // eslint-disable-line no-restricted-globals
+  return [result, end - start];
+};
+
+export const logTime = <T>(name: string, block: () => T): T => {
+  const [result, duration] = time(block);
+  console.debug(`${name} took ${duration}ms`);
+  return result;
+};
+
+export class Profiler {
+  private readonly starts: Map<string, number> = new Map();
+
+  private readonly data: Map<string, [ms: number, count: number]> = new Map();
+
+  public track(name: string, duration: number) {
+    const [ms, count] = this.data.get(name) || [0, 0];
+    this.data.set(name, [ms + duration, count + 1]);
+  }
+
+  public enter(name: string) {
+    this.starts.set(name, self.performance.now()); // eslint-disable-line no-restricted-globals
+  }
+
+  public exit(name: string) {
+    const duration = self.performance.now() - this.starts.get(name)!; // eslint-disable-line no-restricted-globals
+    this.track(name, duration);
+  }
+
+  public cumulative<T>(name: string, block: () => T): T {
+    // return block();
+    const [result, duration] = time(block);
+    this.track(name, duration);
+    return result;
+  }
+
+  public log(loggerFn: (msg: string) => unknown = console.debug) {
+    this.data.forEach(([ms, count], name) => {
+      loggerFn(`${name} took a cumulative ${ms}ms in ${count} calls`);
+    });
+  }
+}
+
 export const PotionMap: { [k in Potion]: { name: string, order: number, image: StaticImageData, calculateFn: (skills: PlayerSkills) => Partial<PlayerSkills> } } = {
   [Potion.OVERLOAD_PLUS]: {
     name: 'Overload (+)',

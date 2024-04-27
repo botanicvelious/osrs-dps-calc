@@ -386,6 +386,7 @@ class GlobalState implements State {
   setCalcWorker(worker: CalcWorker) {
     if (this.calcWorker) {
       console.warn('[GlobalState] CalcWorker is already set!');
+      worker.shutdown();
     }
     worker.initWorker();
     this.calcWorker = worker;

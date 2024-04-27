@@ -25,6 +25,7 @@ export interface WorkerRequest<T extends WorkerRequestType> {
 export interface WorkerCalcOpts {
   includeTtkDist?: boolean,
   detailedOutput?: CalcOpts['detailedOutput'],
+  ttkProfiling?: CalcOpts['profiling'],
   disableMonsterScaling?: CalcOpts['disableMonsterScaling'],
 }
 
@@ -40,7 +41,7 @@ export interface ComputeReverseRequest extends WorkerRequest<WorkerRequestType.C
   data: {
     loadouts: Player[],
     monster: Monster,
-    calcOpts: WorkerCalcOpts,
+    calcOpts: Omit<WorkerCalcOpts, 'ttkProfiling'>,
   }
 }
 

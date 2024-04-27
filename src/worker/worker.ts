@@ -24,6 +24,7 @@ const computePvMValues: Handler<WorkerRequestType.COMPUTE_BASIC> = async (data) 
     const calc = new PlayerVsNPCCalc(p, monster, {
       loadoutName,
       detailedOutput: calcOpts.detailedOutput,
+      profiling: calcOpts.ttkProfiling,
       disableMonsterScaling: calcOpts.disableMonsterScaling,
     });
     res.push({

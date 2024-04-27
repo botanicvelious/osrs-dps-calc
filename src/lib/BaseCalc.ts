@@ -8,6 +8,7 @@ import { UserIssue } from '@/types/State';
 import { CalcDetails, DetailEntry } from '@/lib/CalcDetails';
 import { Factor } from '@/lib/Math';
 import { scaleMonster } from '@/lib/MonsterScaling';
+import { Profiler } from '@/utils';
 
 export interface CalcOpts {
   loadoutName?: string,
@@ -26,6 +27,7 @@ export interface InternalOpts extends CalcOpts {
    * and as such the caller guarantees that all required properties are already sanitized and valid.
    */
   noInit: boolean,
+  profiler: Profiler | null,
 }
 
 const DEFAULT_OPTS: Required<InternalOpts> = {
@@ -33,6 +35,7 @@ const DEFAULT_OPTS: Required<InternalOpts> = {
   detailedOutput: false,
   disableMonsterScaling: false,
   noInit: false,
+  profiler: null,
   overrides: {},
 };
 
@@ -41,6 +44,8 @@ const DEFAULT_OPTS: Required<InternalOpts> = {
  */
 export default class BaseCalc {
   protected opts: Required<InternalOpts>;
+
+  protected profiler: Profiler;
 
   private _details?: CalcDetails;
 
@@ -64,6 +69,7 @@ export default class BaseCalc {
       ...opts,
     };
 
+    this.profiler = this.opts.profiler || new Profiler();
     if (this.opts.detailedOutput) {
       this._details = new CalcDetails();
     }
@@ -155,10 +161,12 @@ export default class BaseCalc {
    * @param item - item name
    */
   protected wearing(item: string | string[]): boolean {
-    if (Array.isArray(item)) {
-      return (item as string[]).some((i) => this.allEquippedItems.includes(i));
-    }
-    return this.allEquippedItems.includes(item);
+    return this.profiler.cumulative('wearing', () => {
+      if (Array.isArray(item)) {
+        return (item as string[]).some((i) => this.allEquippedItems.includes(i));
+      }
+      return this.allEquippedItems.includes(item);
+    });
   }
 
   /**
