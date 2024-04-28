@@ -1128,10 +1128,11 @@ export default class PlayerVsNPCCalc extends BaseCalc {
    * it is an object where keys are tick counts and values are probabilities.
    */
   public getTtkDistribution(): Map<number, number> {
-    this.profiler.enter('setup');
+    this.profiler.enter('ttk dist');
+    this.profiler.enter('ttk setup');
 
     const speed = this.getAttackSpeed();
-    const playerDist = this.getDistribution().zipped;
+    const playerDist = this.getDistribution().zipped.flatten();
     if (playerDist.expectedHit() === 0) { // todo thralls, allow thrall-only compute?
       return new Map<number, number>();
     }
@@ -1189,7 +1190,7 @@ export default class PlayerVsNPCCalc extends BaseCalc {
       }
     }
 
-    this.profiler.exit('setup');
+    this.profiler.exit('ttk setup');
 
     // 1. until the amount of hp values remaining above zero is more than our desired epsilon accuracy,
     //    or we reach the maximum iteration rounds
@@ -1207,11 +1208,14 @@ export default class PlayerVsNPCCalc extends BaseCalc {
         for (const [hp, hpProb] of hps.entries()) {
           // this is a bit of a hack, but idk if there's a better way
           const currDist: HitDistribution = recalcDistOnHp ? hpHitDists[hp] : dist;
+          if (hpProb === 0) {
+            continue;
+          }
 
           // 4. for each damage amount possible,
           for (const wh of currDist.hits) {
             const dmgProb = wh.probability;
-            const dmg = wh.getSum();
+            const dmg = this.profiler.cumulative('ttk hitsum', () => wh.getSum());
 
             const chanceOfAction = dmgProb * hpProb;
             if (chanceOfAction === 0) {
@@ -1220,14 +1224,16 @@ export default class PlayerVsNPCCalc extends BaseCalc {
 
             const newHp = hp - dmg;
             if (newHp <= 0) {
-              ttks.set(tick, (ttks.get(tick) || 0) + chanceOfAction);
-              epsilon -= chanceOfAction;
+              this.profiler.cumulative('ttk terminals', () => {
+                ttks.set(tick, (ttks.get(tick) || 0) + chanceOfAction);
+                epsilon -= chanceOfAction;
+              });
             } else {
               const delays = delayProvider(wh);
-              for (const [delay, delayProb] of delays) {
+              for (const [delayProb, delay] of delays) {
                 this.profiler.cumulative('ttk continuance', () => {
-                  const chanceOfContinuance = chanceOfAction * delayProb;
                   // 7. otherwise, we add the chance of this path to the next iteration's hp value
+                  const chanceOfContinuance = chanceOfAction * delayProb;
                   tickHps[tick + delay][newHp] += chanceOfContinuance;
                   attackOnTick[distIx][tick + delay] += chanceOfContinuance;
                 });
@@ -1238,13 +1244,14 @@ export default class PlayerVsNPCCalc extends BaseCalc {
       }
     }
 
+    this.profiler.exit('ttk dist');
     this.profiler.log(console.log);
     return ttks;
   }
 
-  private weaponDelayProvider(baseSpeed: number): (wh: WeightedHit) => [delay: number, prob: number][] {
+  private weaponDelayProvider(baseSpeed: number): (wh: WeightedHit) => [prob: number, delay: number][] {
     if (this.wearing('Test macuahuitl')) {
-      return (wh) => [[wh.hitsplats[0].accurate ? 3 : 4, 1.0]];
+      return (wh) => [[1.0, wh.hitsplats[0].accurate ? 3 : 4]];
     }
 
     // todo lookup table accurate-hitsplats-count => chance ?
@@ -1260,13 +1267,13 @@ export default class PlayerVsNPCCalc extends BaseCalc {
         }
 
         return [
-          [baseSpeed - 1, 1 - chanceNoEffect],
-          [baseSpeed, chanceNoEffect],
+          [1 - chanceNoEffect, baseSpeed - 1],
+          [chanceNoEffect, baseSpeed],
         ];
       });
     }
 
-    return () => [[baseSpeed, 1.0]];
+    return () => [[1.0, baseSpeed]];
   }
 
   distAtHp(hp: number): HitDistribution {

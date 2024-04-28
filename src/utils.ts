@@ -172,7 +172,13 @@ export class Profiler {
   }
 
   public exit(name: string) {
-    const duration = self.performance.now() - this.starts.get(name)!; // eslint-disable-line no-restricted-globals
+    const start = this.starts.get(name);
+    if (!start) {
+      console.warn(`[Profiler] Exit without start for key ${name}!`);
+      return;
+    }
+
+    const duration = self.performance.now() - start; // eslint-disable-line no-restricted-globals
     this.track(name, duration);
   }
 
@@ -185,7 +191,7 @@ export class Profiler {
 
   public log(loggerFn: (msg: string) => unknown = console.debug) {
     this.data.forEach(([ms, count], name) => {
-      loggerFn(`${name} took a cumulative ${ms}ms in ${count} calls`);
+      loggerFn(`${name} took a cumulative ${ms.toFixed(6)}ms in ${count} calls`);
     });
   }
 }
